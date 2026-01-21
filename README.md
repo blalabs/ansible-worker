@@ -115,13 +115,28 @@ Publish to `<prefix>/<group>/tasks`:
   "check_mode": false,
   "diff_mode": false,
   "forks": 5,
-  "timeout": 1800
+  "timeout": 1800,
+  "git_pull": false
 }
 ```
 
 **Required fields:** `task_id`, `playbook`, `inventory`
 
-The `task_id` must be provided by the controller application. This ID is used for status reporting and correlating task execution.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `task_id` | string | required | Unique identifier from the controller |
+| `playbook` | string | required | Path to playbook relative to playbook directory |
+| `inventory` | string | required | Inventory file or host pattern |
+| `extra_vars` | object | `{}` | Extra variables to pass to the playbook |
+| `limit` | string | `null` | Limit to specific hosts |
+| `tags` | array | `[]` | Only run tasks with these tags |
+| `skip_tags` | array | `[]` | Skip tasks with these tags |
+| `verbosity` | int | `0` | Verbosity level (0-4) |
+| `check_mode` | bool | `false` | Run in check mode (dry run) |
+| `diff_mode` | bool | `false` | Show diffs for changed files |
+| `forks` | int | `5` | Number of parallel processes |
+| `timeout` | int | `null` | Task timeout in seconds |
+| `git_pull` | bool | `false` | Run `git pull` in playbook directory before executing |
 
 ### Task Status (Output)
 
@@ -154,6 +169,7 @@ Published to `<prefix>/<group>/tasks/<task_id>/status`:
 |-------|--------|
 | MQTT disconnect | Auto-reconnect with exponential backoff |
 | Invalid JSON/missing fields | Log error, discard message |
+| git pull failed | Mark task `failed`, publish status |
 | Playbook not found | Mark task `failed`, publish status |
 | Execution error | Mark task `failed` with error message |
 | Queue full | Reject with `failed` status |

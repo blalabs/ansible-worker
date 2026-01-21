@@ -29,6 +29,7 @@ class TestTaskRequest:
         assert request.diff_mode is False
         assert request.forks == 5
         assert request.timeout is None
+        assert request.git_pull is False
 
     def test_from_dict_full(self):
         """Test creating TaskRequest with all fields."""
@@ -45,6 +46,7 @@ class TestTaskRequest:
             "diff_mode": True,
             "forks": 10,
             "timeout": 1800,
+            "git_pull": True,
         }
         request = TaskRequest.from_dict(data)
 
@@ -60,6 +62,7 @@ class TestTaskRequest:
         assert request.diff_mode is True
         assert request.forks == 10
         assert request.timeout == 1800
+        assert request.git_pull is True
 
     def test_from_dict_missing_task_id(self):
         """Test that missing task_id raises ValueError."""

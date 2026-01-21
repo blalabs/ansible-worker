@@ -1,6 +1,7 @@
 """Ansible playbook executor using ansible-runner."""
 
 import logging
+import subprocess
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -81,6 +82,11 @@ class Executor:
     def _execute_task(self, task: Task) -> None:
         """Execute a single task."""
         logger.info(f"Starting task {task.task_id}: {task.request.playbook}")
+
+        # Run git pull if requested
+        if task.request.git_pull:
+            if not self._git_pull(task):
+                return
 
         playbook_path = Path(self._config.playbook_directory) / task.request.playbook
         if not playbook_path.exists():
@@ -172,6 +178,51 @@ class Executor:
             args.append(f"--forks={task.request.forks}")
 
         return " ".join(args)
+
+    def _git_pull(self, task: Task) -> bool:
+        """Run git pull in the playbook directory.
+
+        Args:
+            task: The task requesting the git pull.
+
+        Returns:
+            True if git pull succeeded, False otherwise.
+        """
+        logger.info(f"Task {task.task_id}: Running git pull in {self._config.playbook_directory}")
+
+        try:
+            result = subprocess.run(
+                ["git", "pull"],
+                cwd=self._config.playbook_directory,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            if result.returncode != 0:
+                error_msg = f"git pull failed: {result.stderr.strip() or result.stdout.strip()}"
+                logger.error(f"Task {task.task_id}: {error_msg}")
+                self._mark_failed(task, error_msg)
+                return False
+
+            logger.info(f"Task {task.task_id}: git pull successful")
+            return True
+
+        except subprocess.TimeoutExpired:
+            error_msg = "git pull timed out after 60 seconds"
+            logger.error(f"Task {task.task_id}: {error_msg}")
+            self._mark_failed(task, error_msg)
+            return False
+        except FileNotFoundError:
+            error_msg = "git command not found"
+            logger.error(f"Task {task.task_id}: {error_msg}")
+            self._mark_failed(task, error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"git pull error: {e}"
+            logger.error(f"Task {task.task_id}: {error_msg}")
+            self._mark_failed(task, error_msg)
+            return False
 
     def _process_event(self, task: Task, event: dict[str, Any]) -> None:
         """Process an ansible-runner event."""

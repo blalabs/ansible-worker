@@ -545,3 +545,227 @@ class TestExecutorCommandLineArgs:
         cmdline = call_kwargs.get("cmdline")
         if cmdline:
             assert "--forks" not in cmdline
+
+
+class TestExecutorGitPull:
+    """Tests for git pull functionality."""
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_pull_success(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test successful git pull before playbook execution."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        # Mock successful git pull
+        mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # Mock successful ansible run
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_ansible_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-git-pull-001",
+            playbook="site.yml",
+            inventory="test",
+            git_pull=True,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # Verify git pull was called
+        mock_subprocess_run.assert_called_once()
+        call_args = mock_subprocess_run.call_args
+        assert call_args[0][0] == ["git", "pull"]
+        assert call_args[1]["cwd"] == str(tmp_path)
+
+        # Verify ansible-runner was called
+        mock_ansible_run.assert_called_once()
+
+        # Verify success status
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_pull_failure(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test failed git pull marks task as failed."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        # Mock failed git pull
+        mock_subprocess_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: cannot pull with rebase",
+        )
+
+        request = TaskRequest(
+            task_id="test-git-pull-002",
+            playbook="site.yml",
+            inventory="test",
+            git_pull=True,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # Verify git pull was called
+        mock_subprocess_run.assert_called_once()
+
+        # Verify ansible-runner was NOT called
+        mock_ansible_run.assert_not_called()
+
+        # Verify failed status
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "git pull failed" in final_status.error_message
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_pull_timeout(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test git pull timeout marks task as failed."""
+        import subprocess
+
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        # Mock git pull timeout
+        mock_subprocess_run.side_effect = subprocess.TimeoutExpired(cmd="git pull", timeout=60)
+
+        request = TaskRequest(
+            task_id="test-git-pull-003",
+            playbook="site.yml",
+            inventory="test",
+            git_pull=True,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # Verify ansible-runner was NOT called
+        mock_ansible_run.assert_not_called()
+
+        # Verify failed status
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "timed out" in final_status.error_message
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_command_not_found(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test git command not found marks task as failed."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        # Mock git not found
+        mock_subprocess_run.side_effect = FileNotFoundError()
+
+        request = TaskRequest(
+            task_id="test-git-pull-004",
+            playbook="site.yml",
+            inventory="test",
+            git_pull=True,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # Verify ansible-runner was NOT called
+        mock_ansible_run.assert_not_called()
+
+        # Verify failed status
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "git command not found" in final_status.error_message
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_pull_disabled_by_default(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that git pull is not executed when git_pull=False (default)."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        # Mock successful ansible run
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_ansible_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-git-pull-005",
+            playbook="site.yml",
+            inventory="test",
+            # git_pull defaults to False
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # Verify git pull was NOT called
+        mock_subprocess_run.assert_not_called()
+
+        # Verify ansible-runner was called
+        mock_ansible_run.assert_called_once()
+
+        # Verify success status
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS

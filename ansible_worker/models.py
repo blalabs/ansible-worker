@@ -33,6 +33,7 @@ class TaskRequest:
     diff_mode: bool = False
     forks: int = 5
     timeout: int | None = None
+    git_pull: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskRequest":
@@ -57,6 +58,7 @@ class TaskRequest:
             diff_mode=data.get("diff_mode", False),
             forks=data.get("forks", 5),
             timeout=data.get("timeout"),
+            git_pull=data.get("git_pull", False),
         )
 
 
