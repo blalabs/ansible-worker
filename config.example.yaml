@@ -1,0 +1,16 @@
+mqtt:
+  host: "mqtt.example.com"
+  port: 1883
+  username: "ansible-worker"
+  password: "${MQTT_PASSWORD}"
+  keepalive: 60
+  tls_enabled: false
+
+worker:
+  group_name: "production"
+  playbook_directory: "/opt/ansible/playbooks"
+  topic_prefix: "ansible"
+  max_queue_size: 100
+  task_timeout: 3600
+
+log_level: "INFO"
