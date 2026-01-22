@@ -34,6 +34,7 @@ class TaskRequest:
     forks: int = 5
     timeout: int | None = None
     git_pull: bool = False
+    project_dir: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskRequest":
@@ -59,6 +60,7 @@ class TaskRequest:
             forks=data.get("forks", 5),
             timeout=data.get("timeout"),
             git_pull=data.get("git_pull", False),
+            project_dir=data.get("project_dir"),
         )
 
 

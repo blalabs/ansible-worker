@@ -129,7 +129,7 @@ class TestExecutor:
         # Verify ansible-runner was called
         mock_run.assert_called_once()
         call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["playbook"] == "site.yml"
+        assert call_kwargs["playbook"] == str(playbook_path)
         assert call_kwargs["inventory"] == "test"
 
         # Check status progression

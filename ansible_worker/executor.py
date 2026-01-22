@@ -2,6 +2,7 @@
 
 import logging
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -115,38 +116,40 @@ class Executor:
             return True
 
         try:
-            runner = ansible_runner.run(
-                private_data_dir=self._config.playbook_directory,
-                playbook=task.request.playbook,
-                inventory=task.request.inventory,
-                extravars=task.request.extra_vars or None,
-                cmdline=cmdline_args if cmdline_args else None,
-                event_handler=event_handler,
-                status_handler=status_handler,
-                timeout=timeout,
-                quiet=True,
-            )
+            with tempfile.TemporaryDirectory(prefix="ansible_worker_") as temp_dir:
+                runner = ansible_runner.run(
+                    private_data_dir=temp_dir,
+                    project_dir=task.request.project_dir or self._config.playbook_directory,
+                    playbook=str(playbook_path),
+                    inventory=task.request.inventory,
+                    extravars=task.request.extra_vars or None,
+                    cmdline=cmdline_args if cmdline_args else None,
+                    event_handler=event_handler,
+                    status_handler=status_handler,
+                    timeout=timeout,
+                    quiet=True,
+                )
 
-            self._current_runner = runner
+                self._current_runner = runner
 
-            task.status.return_code = runner.rc
-            task.status.completed_at = datetime.now(timezone.utc)
+                task.status.return_code = runner.rc
+                task.status.completed_at = datetime.now(timezone.utc)
 
-            if runner.status == "canceled":
-                task.status.state = TaskState.CANCELLED
-                logger.info(f"Task {task.task_id} cancelled")
-            elif runner.status == "timeout":
-                task.status.state = TaskState.TIMEOUT
-                logger.warning(f"Task {task.task_id} timed out")
-            elif runner.rc == 0:
-                task.status.state = TaskState.SUCCESS
-                logger.info(f"Task {task.task_id} completed successfully")
-            else:
-                task.status.state = TaskState.FAILED
-                task.status.error_message = f"Playbook failed with return code {runner.rc}"
-                logger.error(f"Task {task.task_id} failed with rc={runner.rc}")
+                if runner.status == "canceled":
+                    task.status.state = TaskState.CANCELLED
+                    logger.info(f"Task {task.task_id} cancelled")
+                elif runner.status == "timeout":
+                    task.status.state = TaskState.TIMEOUT
+                    logger.warning(f"Task {task.task_id} timed out")
+                elif runner.rc == 0:
+                    task.status.state = TaskState.SUCCESS
+                    logger.info(f"Task {task.task_id} completed successfully")
+                else:
+                    task.status.state = TaskState.FAILED
+                    task.status.error_message = f"Playbook failed with return code {runner.rc}"
+                    logger.error(f"Task {task.task_id} failed with rc={runner.rc}")
 
-            self._on_status_update(task.status)
+                self._on_status_update(task.status)
 
         except Exception as e:
             logger.exception(f"Error running playbook: {e}")
