@@ -27,5 +27,8 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Type check with mypy
+        run: mypy ansible_worker
+
       - name: Run tests
         run: pytest --cov=ansible_worker tests/
