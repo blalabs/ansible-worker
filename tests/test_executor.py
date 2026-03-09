@@ -769,3 +769,583 @@ class TestExecutorGitPull:
         # Verify success status
         final_status = status_updates[-1]
         assert final_status.state == TaskState.SUCCESS
+
+
+class TestExecutorSecurityValidation:
+    """Tests for security validation in executor."""
+
+    def test_playbook_path_traversal_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that path traversal in playbook path is blocked."""
+        # Create a playbook outside the allowed directory
+        (tmp_path / "allowed").mkdir()
+        (tmp_path / "secret.yml").write_text("---\n- hosts: all\n")
+
+        # Reconfigure executor with subdirectory as playbook_directory
+        executor._config.playbook_directory = str(tmp_path / "allowed")
+
+        request = TaskRequest(
+            task_id="test-traversal-001",
+            playbook="../secret.yml",
+            inventory="localhost,",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "path traversal" in final_status.error_message.lower()
+
+    def test_project_dir_traversal_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that path traversal in project_dir is blocked."""
+        (tmp_path / "allowed").mkdir()
+        (tmp_path / "allowed" / "site.yml").write_text("---\n- hosts: all\n")
+
+        executor._config.playbook_directory = str(tmp_path / "allowed")
+
+        request = TaskRequest(
+            task_id="test-traversal-002",
+            playbook="site.yml",
+            inventory="localhost,",
+            project_dir=str(tmp_path),  # Parent directory - not allowed
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "path traversal" in final_status.error_message.lower()
+
+    def test_project_dir_relative_traversal_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that relative path traversal in project_dir is blocked."""
+        (tmp_path / "allowed").mkdir()
+        (tmp_path / "allowed" / "site.yml").write_text("---\n- hosts: all\n")
+
+        executor._config.playbook_directory = str(tmp_path / "allowed")
+
+        request = TaskRequest(
+            task_id="test-traversal-003",
+            playbook="site.yml",
+            inventory="localhost,",
+            project_dir="../",  # Relative traversal - not allowed
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "path traversal" in final_status.error_message.lower()
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_project_dir_subdirectory_allowed(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that subdirectories of playbook_directory are allowed."""
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "subdir" / "site.yml").write_text("---\n- hosts: all\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-subdir-001",
+            playbook="site.yml",
+            inventory="localhost,",
+            project_dir=str(tmp_path / "subdir"),
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+
+    def test_inventory_path_traversal_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that inventory path traversal is blocked."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        request = TaskRequest(
+            task_id="test-inventory-001",
+            playbook="site.yml",
+            inventory="../../../etc/passwd",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "path traversal" in final_status.error_message.lower()
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_inventory_host_pattern_allowed(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that valid host patterns are allowed as inventory."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        # Test various valid host patterns
+        valid_patterns = [
+            "localhost,",
+            "all",
+            "webservers",
+            "192.168.1.1,",
+            "web[1:10].example.com",
+            "webservers:dbservers",
+            "webservers:&staging",
+            "webservers:!excluded",
+        ]
+
+        for pattern in valid_patterns:
+            mock_run.reset_mock()
+            status_updates.clear()
+
+            request = TaskRequest(
+                task_id=f"test-pattern-{pattern[:10]}",
+                playbook="site.yml",
+                inventory=pattern,
+            )
+            task = Task.create(request)
+
+            task_queue.put(task)
+            executor.start()
+            import time
+            time.sleep(0.3)
+            executor.stop()
+
+            final_status = status_updates[-1]
+            assert final_status.state == TaskState.SUCCESS, f"Pattern {pattern} should be allowed"
+
+    def test_extra_vars_invalid_key_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that invalid extra_vars keys are blocked."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        request = TaskRequest(
+            task_id="test-extra-vars-001",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars={"valid_key": "value", "invalid-key-with-dash": "value"},
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "invalid extra_vars key" in final_status.error_message.lower()
+
+    def test_extra_vars_key_starting_with_number_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that extra_vars keys starting with numbers are blocked."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        request = TaskRequest(
+            task_id="test-extra-vars-002",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars={"1invalid": "value"},
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "invalid extra_vars key" in final_status.error_message.lower()
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_extra_vars_valid_keys_allowed(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that valid extra_vars keys are allowed."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-extra-vars-003",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars={
+                "valid_key": "value",
+                "_private": "value",
+                "CamelCase": "value",
+                "with_numbers_123": "value",
+            },
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+
+    def test_extra_vars_deeply_nested_blocked(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that deeply nested extra_vars are blocked (DoS protection)."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        # Create deeply nested structure (11 levels deep)
+        nested = {"level": "bottom"}
+        for i in range(12):
+            nested = {"nested": nested}
+
+        request = TaskRequest(
+            task_id="test-extra-vars-004",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars=nested,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "unsafe value" in final_status.error_message.lower()
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_extra_vars_nested_dict_allowed(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that reasonably nested extra_vars are allowed."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-extra-vars-005",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars={
+                "app": {
+                    "name": "myapp",
+                    "version": "1.0.0",
+                    "config": {
+                        "debug": True,
+                        "port": 8080,
+                    },
+                },
+                "hosts": ["host1", "host2"],
+            },
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+
+class TestExecutorOutput:
+    """Tests for task output from set_stats."""
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_custom_stats_populate_output(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that custom stats from set_stats are included in task output."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        def capture_event_handler(mock_runner, event_handler):
+            """Simulate ansible-runner events with custom stats."""
+            event_handler({
+                "event": "playbook_on_task_start",
+                "event_data": {"name": "create vm"},
+            })
+            event_handler({
+                "event": "runner_on_ok",
+                "event_data": {"res": {"changed": True}},
+            })
+            event_handler({
+                "event": "playbook_on_stats",
+                "event_data": {
+                    "ok": {"localhost": 1},
+                    "changed": {"localhost": 1},
+                    "failures": {},
+                    "skipped": {},
+                    "dark": {},
+                    "custom": {
+                        "vm_ip": "10.0.0.50",
+                        "vm_id": 105,
+                    },
+                },
+            })
+
+        def side_effect(**kwargs):
+            event_handler = kwargs["event_handler"]
+            mock_runner = MagicMock()
+            mock_runner.status = "successful"
+            mock_runner.rc = 0
+            capture_event_handler(mock_runner, event_handler)
+            return mock_runner
+
+        mock_run.side_effect = side_effect
+
+        request = TaskRequest(
+            task_id="test-output-001",
+            playbook="site.yml",
+            inventory="localhost,",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+        assert final_status.output == {"vm_ip": "10.0.0.50", "vm_id": 105}
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_empty_custom_stats_leave_output_empty(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that missing custom stats result in empty output."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        def side_effect(**kwargs):
+            event_handler = kwargs["event_handler"]
+            event_handler({
+                "event": "playbook_on_stats",
+                "event_data": {
+                    "ok": {"localhost": 1},
+                    "changed": {},
+                    "failures": {},
+                    "skipped": {},
+                    "dark": {},
+                },
+            })
+            mock_runner = MagicMock()
+            mock_runner.status = "successful"
+            mock_runner.rc = 0
+            return mock_runner
+
+        mock_run.side_effect = side_effect
+
+        request = TaskRequest(
+            task_id="test-output-002",
+            playbook="site.yml",
+            inventory="localhost,",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS
+        assert final_status.output == {}
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_output_included_in_status_dict(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that output is included in the serialized status dict."""
+        playbook_path = tmp_path / "site.yml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        def side_effect(**kwargs):
+            event_handler = kwargs["event_handler"]
+            event_handler({
+                "event": "playbook_on_stats",
+                "event_data": {
+                    "ok": {"localhost": 1},
+                    "changed": {},
+                    "failures": {},
+                    "skipped": {},
+                    "dark": {},
+                    "custom": {"server_ip": "192.168.1.100"},
+                },
+            })
+            mock_runner = MagicMock()
+            mock_runner.status = "successful"
+            mock_runner.rc = 0
+            return mock_runner
+
+        mock_run.side_effect = side_effect
+
+        request = TaskRequest(
+            task_id="test-output-003",
+            playbook="site.yml",
+            inventory="localhost,",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        status_dict = final_status.to_dict()
+        assert status_dict["output"] == {"server_ip": "192.168.1.100"}
+
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_empty_extra_vars_allowed(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that empty extra_vars are allowed."""
+        (tmp_path / "site.yml").write_text("---\n- hosts: all\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-extra-vars-006",
+            playbook="site.yml",
+            inventory="localhost,",
+            extra_vars={},
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        import time
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.SUCCESS

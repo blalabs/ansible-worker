@@ -1,6 +1,7 @@
 """Ansible playbook executor using ansible-runner."""
 
 import logging
+import re
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,13 @@ from ansible_worker.models import Task, TaskState, TaskStatus
 from ansible_worker.task_queue import TaskQueue
 
 logger = logging.getLogger(__name__)
+
+# Pattern for valid Ansible host patterns (hostnames, IPs, groups, patterns)
+# Allows: alphanumeric, dots, hyphens, underscores, colons, brackets, wildcards, commas, ampersands, exclamation
+HOST_PATTERN_RE = re.compile(r'^[a-zA-Z0-9_.:\-\[\]*,&!~]+$')
+
+# Pattern for valid extra_vars keys (Ansible variable names)
+VALID_VAR_KEY_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
 
 class Executor:
@@ -80,18 +88,190 @@ class Executor:
                 self._current_task = None
                 self._current_runner = None
 
+    def _validate_path_within_directory(self, path: Path, base_directory: Path) -> bool:
+        """Validate that a path is within the base directory.
+
+        Args:
+            path: The path to validate.
+            base_directory: The base directory the path must be within.
+
+        Returns:
+            True if the path is within the base directory, False otherwise.
+        """
+        try:
+            resolved_path = path.resolve()
+            resolved_base = base_directory.resolve()
+            return resolved_path.is_relative_to(resolved_base)
+        except (ValueError, OSError):
+            return False
+
+    def _validate_project_dir(self, task: Task) -> str | None:
+        """Validate and return the project directory.
+
+        Args:
+            task: The task containing the project_dir request.
+
+        Returns:
+            The validated project directory path, or None if validation fails.
+        """
+        base_dir = Path(self._config.playbook_directory)
+
+        if task.request.project_dir is None:
+            return str(base_dir)
+
+        project_path = Path(task.request.project_dir)
+
+        # If relative, resolve against base directory
+        if not project_path.is_absolute():
+            project_path = base_dir / project_path
+
+        if not self._validate_path_within_directory(project_path, base_dir):
+            self._mark_failed(task, "Invalid project_dir: path traversal detected")
+            return None
+
+        if not project_path.exists():
+            self._mark_failed(task, "Invalid project_dir: directory does not exist")
+            return None
+
+        if not project_path.is_dir():
+            self._mark_failed(task, "Invalid project_dir: not a directory")
+            return None
+
+        return str(project_path)
+
+    def _validate_playbook_path(self, task: Task, project_dir: str) -> Path | None:
+        """Validate and return the playbook path.
+
+        Args:
+            task: The task containing the playbook request.
+            project_dir: The validated project directory.
+
+        Returns:
+            The validated playbook path, or None if validation fails.
+        """
+        base_dir = Path(project_dir)
+        playbook_path = base_dir / task.request.playbook
+
+        if not self._validate_path_within_directory(playbook_path, base_dir):
+            self._mark_failed(task, "Invalid playbook path: path traversal detected")
+            return None
+
+        if not playbook_path.exists():
+            self._mark_failed(task, f"Playbook not found: {task.request.playbook}")
+            return None
+
+        return playbook_path
+
+    def _validate_inventory(self, task: Task, project_dir: str) -> str | None:
+        """Validate and return the inventory specification.
+
+        Args:
+            task: The task containing the inventory request.
+            project_dir: The validated project directory.
+
+        Returns:
+            The validated inventory specification, or None if validation fails.
+        """
+        inventory = task.request.inventory
+
+        # Check if it looks like a host pattern (not a file path)
+        # Host patterns don't contain path separators and match the pattern
+        if HOST_PATTERN_RE.match(inventory) and '/' not in inventory and '\\' not in inventory:
+            return inventory
+
+        # Treat as a file path - validate it's within project directory
+        base_dir = Path(project_dir)
+        inventory_path = base_dir / inventory
+
+        if not self._validate_path_within_directory(inventory_path, base_dir):
+            self._mark_failed(task, "Invalid inventory: path traversal detected")
+            return None
+
+        # Note: We don't require the file to exist here as ansible-runner will handle that
+        return str(inventory_path)
+
+    def _validate_extra_vars(self, task: Task) -> dict[str, Any] | None:
+        """Validate extra_vars to prevent injection attacks.
+
+        Args:
+            task: The task containing extra_vars.
+
+        Returns:
+            The validated extra_vars dict, or None if validation fails.
+        """
+        extra_vars = task.request.extra_vars
+
+        if not extra_vars:
+            return {}
+
+        # Validate all keys are valid Ansible variable names
+        for key in extra_vars.keys():
+            if not isinstance(key, str) or not VALID_VAR_KEY_RE.match(key):
+                self._mark_failed(task, f"Invalid extra_vars key: {key!r}")
+                return None
+
+        # Validate values are safe types (no code objects, etc.)
+        if not self._validate_extra_vars_values(extra_vars):
+            self._mark_failed(task, "Invalid extra_vars: contains unsafe value types")
+            return None
+
+        return extra_vars
+
+    def _validate_extra_vars_values(self, value: Any, depth: int = 0) -> bool:
+        """Recursively validate extra_vars values are safe types.
+
+        Args:
+            value: The value to validate.
+            depth: Current recursion depth (to prevent stack overflow).
+
+        Returns:
+            True if the value is safe, False otherwise.
+        """
+        # Prevent deeply nested structures (potential DoS)
+        if depth > 10:
+            return False
+
+        if value is None:
+            return True
+        if isinstance(value, (str, int, float, bool)):
+            return True
+        if isinstance(value, list):
+            return all(self._validate_extra_vars_values(item, depth + 1) for item in value)
+        if isinstance(value, dict):
+            return all(
+                isinstance(k, str) and self._validate_extra_vars_values(v, depth + 1)
+                for k, v in value.items()
+            )
+        # Reject any other types (functions, objects, etc.)
+        return False
+
     def _execute_task(self, task: Task) -> None:
         """Execute a single task."""
         logger.info(f"Starting task {task.task_id}: {task.request.playbook}")
 
-        # Run git pull if requested
+        # Validate project_dir (protects against path traversal)
+        project_dir = self._validate_project_dir(task)
+        if project_dir is None:
+            return
+
+        # Run git pull if requested (after project_dir validation)
         if task.request.git_pull:
             if not self._git_pull(task):
                 return
 
-        playbook_path = Path(self._config.playbook_directory) / task.request.playbook
-        if not playbook_path.exists():
-            self._mark_failed(task, f"Playbook not found: {task.request.playbook}")
+        # Validate playbook path (protects against path traversal)
+        playbook_path = self._validate_playbook_path(task, project_dir)
+        if playbook_path is None:
+            return
+
+        # Validate inventory (protects against arbitrary file access)
+        inventory = self._validate_inventory(task, project_dir)
+        if inventory is None:
+            return
+
+        # Validate extra_vars (protects against injection)
+        extra_vars = self._validate_extra_vars(task)
+        if extra_vars is None:
             return
 
         task.status.state = TaskState.RUNNING
@@ -119,10 +299,10 @@ class Executor:
             with tempfile.TemporaryDirectory(prefix="ansible_worker_") as temp_dir:
                 runner = ansible_runner.run(
                     private_data_dir=temp_dir,
-                    project_dir=task.request.project_dir or self._config.playbook_directory,
+                    project_dir=project_dir,
                     playbook=str(playbook_path),
-                    inventory=task.request.inventory,
-                    extravars=task.request.extra_vars or None,
+                    inventory=inventory,
+                    extravars=extra_vars or None,
                     cmdline=cmdline_args if cmdline_args else None,
                     event_handler=event_handler,
                     status_handler=status_handler,
@@ -267,6 +447,11 @@ class Executor:
         task.status.tasks_failed = sum(failed_hosts.values()) if failed_hosts else 0
         task.status.tasks_skipped = sum(skipped_hosts.values()) if skipped_hosts else 0
         task.status.tasks_unreachable = sum(unreachable_hosts.values()) if unreachable_hosts else 0
+
+        # Extract custom stats set via ansible.builtin.set_stats
+        custom = stats.get("custom", {})
+        if custom and isinstance(custom, dict):
+            task.status.output.update(custom)
 
     def _mark_failed(self, task: Task, error_message: str) -> None:
         """Mark a task as failed."""

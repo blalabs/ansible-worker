@@ -157,11 +157,47 @@ Published to `<prefix>/<group>/tasks/<task_id>/status`:
   "tasks_skipped": 2,
   "tasks_unreachable": 0,
   "return_code": null,
-  "error_message": null
+  "error_message": null,
+  "output": {}
 }
 ```
 
 **States:** `queued`, `running`, `success`, `failed`, `cancelled`, `timeout`
+
+### Task Output
+
+Playbooks can push custom data back to the controller using Ansible's built-in `set_stats` module. Any data set via `set_stats` will appear in the `output` field of the task status.
+
+Example playbook usage:
+
+```yaml
+- name: create vm
+  community.general.proxmox_kvm:
+    name: my-vm
+    # ...
+  register: vm_result
+
+- name: report vm details to controller
+  ansible.builtin.set_stats:
+    data:
+      vm_ip: "{{ vm_result.ip }}"
+      vm_id: "{{ vm_result.vmid }}"
+```
+
+The resulting status message will include:
+
+```json
+{
+  "task_id": "a1b2c3d4e5f67890",
+  "state": "success",
+  "output": {
+    "vm_ip": "10.0.0.50",
+    "vm_id": 105
+  }
+}
+```
+
+Multiple `set_stats` calls within a playbook are merged into a single `output` dict. Later calls overwrite earlier values for the same key.
 
 ## Error Handling
 

@@ -81,6 +81,7 @@ class TaskStatus:
     tasks_unreachable: int = 0
     return_code: int | None = None
     error_message: str | None = None
+    output: dict[str, Any] = field(default_factory=dict)
 
     @property
     def duration_seconds(self) -> float | None:
@@ -115,6 +116,7 @@ class TaskStatus:
             "tasks_unreachable": self.tasks_unreachable,
             "return_code": self.return_code,
             "error_message": self.error_message,
+            "output": self.output,
         }
 
 
