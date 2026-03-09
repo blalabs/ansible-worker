@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import paho.mqtt.client as mqtt
 import pytest
 
 from ansible_worker.config import MQTTConfig
@@ -262,7 +263,7 @@ class TestMQTTClientMessageHandling:
 
         assert len(received_messages) == 0
 
-    def test_on_message_callback_exception(self, mqtt_config, mock_paho_client):
+    def test_on_message_callback_exception_logged(self, mqtt_config, mock_paho_client):
         """Test that exceptions in callback are caught."""
         def failing_callback(msg):
             raise ValueError("Test error")
@@ -282,3 +283,161 @@ class TestMQTTClientMessageHandling:
 
         # Should not raise, just log error
         client._on_message(mock_paho_client, None, mock_message)
+
+
+class TestMQTTClientConnection:
+    """Tests for MQTT connection handling."""
+
+    def test_on_connect_success(self, mqtt_config, mock_paho_client):
+        """Test _on_connect subscribes and sets connected on CONNACK_ACCEPTED."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        client._on_connect(mock_paho_client, None, None, mqtt.CONNACK_ACCEPTED, None)
+
+        mock_paho_client.subscribe.assert_called_once_with(
+            client._shared_task_topic, qos=2
+        )
+        assert client.is_connected is True
+
+    def test_on_connect_failure(self, mqtt_config, mock_paho_client):
+        """Test _on_connect logs error on non-accepted reason code."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        client._on_connect(mock_paho_client, None, None, 5, None)
+
+        mock_paho_client.subscribe.assert_not_called()
+        assert client.is_connected is False
+
+    def test_on_disconnect_graceful(self, mqtt_config, mock_paho_client):
+        """Test _on_disconnect with shutdown=True logs info."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+        # Simulate being connected first
+        client._connected.set()
+        client._shutdown = True
+
+        with patch("ansible_worker.mqtt_client.logger") as mock_logger:
+            client._on_disconnect(mock_paho_client, None, None, 0, None)
+
+        assert client.is_connected is False
+        mock_logger.info.assert_called_once_with("Disconnected from MQTT broker")
+
+    def test_on_disconnect_unexpected(self, mqtt_config, mock_paho_client):
+        """Test _on_disconnect with shutdown=False logs warning."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+        client._connected.set()
+        client._shutdown = False
+
+        with patch("ansible_worker.mqtt_client.logger") as mock_logger:
+            client._on_disconnect(mock_paho_client, None, None, 16, None)
+
+        assert client.is_connected is False
+        mock_logger.warning.assert_called_once()
+
+    def test_connect_success(self, mqtt_config, mock_paho_client):
+        """Test connect() happy path."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        # Simulate the connected event being set after connect/loop_start
+        def set_connected(*args, **kwargs):
+            client._connected.set()
+
+        mock_paho_client.connect.side_effect = set_connected
+
+        result = client.connect(timeout=5.0)
+
+        assert result is True
+        mock_paho_client.connect.assert_called_once_with(
+            mqtt_config.host, mqtt_config.port, keepalive=mqtt_config.keepalive
+        )
+        mock_paho_client.loop_start.assert_called_once()
+
+    def test_connect_timeout(self, mqtt_config, mock_paho_client):
+        """Test connect() when connected event is never set."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        result = client.connect(timeout=0.1)
+
+        assert result is False
+
+    def test_connect_exception(self, mqtt_config, mock_paho_client):
+        """Test connect() when _client.connect() raises."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+        mock_paho_client.connect.side_effect = ConnectionRefusedError("refused")
+
+        result = client.connect(timeout=5.0)
+
+        assert result is False
+
+    def test_publish_status_failure(self, mqtt_config, mock_paho_client):
+        """Test publish_status when publish returns non-success rc."""
+        mock_paho_client.publish.return_value = MagicMock(rc=1)
+
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        status = TaskStatus(
+            task_id="fail123",
+            state=TaskState.RUNNING,
+            created_at=datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        )
+
+        with patch("ansible_worker.mqtt_client.logger") as mock_logger:
+            client.publish_status(status)
+
+        mock_logger.error.assert_called_once()
+        assert "fail123" in mock_logger.error.call_args[0][0]
+
+    def test_wait_for_connection(self, mqtt_config, mock_paho_client):
+        """Test wait_for_connection returns correct value."""
+        client = MQTTClient(
+            config=mqtt_config,
+            group_name="test",
+            topic_prefix="ansible",
+            on_task_message=lambda x: None,
+        )
+
+        # Not connected - should return False with short timeout
+        assert client.wait_for_connection(timeout=0.05) is False
+
+        # Set connected - should return True
+        client._connected.set()
+        assert client.wait_for_connection(timeout=0.05) is True

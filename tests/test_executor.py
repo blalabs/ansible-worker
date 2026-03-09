@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1349,3 +1350,333 @@ class TestExecutorOutput:
 
         final_status = status_updates[-1]
         assert final_status.state == TaskState.SUCCESS
+
+
+class TestExecutorStopBehavior:
+    """Tests for executor stop/shutdown edge cases."""
+
+    def test_stop_cancels_current_runner(self, executor: Executor):
+        """Test that stop() cancels the current runner."""
+        mock_runner = MagicMock()
+        executor._current_runner = mock_runner
+
+        executor._shutdown = threading.Event()
+        executor._thread = MagicMock()
+        executor._thread.is_alive.return_value = False
+
+        executor.stop()
+
+        mock_runner.cancel.assert_called_once()
+
+    def test_stop_warns_when_thread_alive(self, executor: Executor):
+        """Test warning logged when executor thread doesn't stop cleanly."""
+        executor._shutdown = threading.Event()
+        mock_thread = MagicMock()
+        mock_thread.is_alive.return_value = True
+        executor._thread = mock_thread
+
+        with patch("ansible_worker.executor.logger") as mock_logger:
+            executor.stop()
+
+        mock_logger.warning.assert_called_once_with("Executor thread did not stop cleanly")
+
+    def test_run_catches_unexpected_exception(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+    ):
+        """Test that unexpected exceptions in _run() mark the task as failed."""
+        request = TaskRequest(
+            task_id="test-exception-001",
+            playbook="site.yml",
+            inventory="test",
+        )
+        task = Task.create(request)
+
+        with patch.object(executor, "_execute_task", side_effect=RuntimeError("boom")):
+            task_queue.put(task)
+            executor.start()
+            time.sleep(0.5)
+            executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "boom" in final_status.error_message
+
+
+class TestExecutorValidation:
+    """Tests for validation edge cases."""
+
+    def test_validate_path_raises_os_error(self, executor: Executor):
+        """Test _validate_path_within_directory returns False on OSError."""
+        with patch.object(Path, "resolve", side_effect=OSError("bad path")):
+            result = executor._validate_path_within_directory(Path("/some/path"), Path("/base"))
+        assert result is False
+
+    def test_project_dir_does_not_exist(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that a non-existent project_dir fails validation."""
+        (tmp_path / "site.yml").write_text("---\n")
+
+        request = TaskRequest(
+            task_id="test-nodir-001",
+            playbook="site.yml",
+            inventory="test",
+            project_dir="nonexistent_subdir",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "does not exist" in final_status.error_message
+
+    def test_project_dir_is_file(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that a file used as project_dir fails validation."""
+        file_path = tmp_path / "afile"
+        file_path.write_text("not a directory")
+
+        request = TaskRequest(
+            task_id="test-filedir-001",
+            playbook="site.yml",
+            inventory="test",
+            project_dir="afile",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "not a directory" in final_status.error_message
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_inventory_file_path(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test inventory containing '/' is treated as a file path."""
+        (tmp_path / "site.yml").write_text("---\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.rc = 0
+        mock_run.return_value = mock_runner
+
+        request = TaskRequest(
+            task_id="test-inv-path-001",
+            playbook="site.yml",
+            inventory="inventories/prod",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["inventory"] == str(tmp_path / "inventories" / "prod")
+
+    def test_extra_vars_unsupported_type(
+        self,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that unsupported types in extra_vars values are rejected."""
+        (tmp_path / "site.yml").write_text("---\n")
+
+        request = TaskRequest(
+            task_id="test-badtype-001",
+            playbook="site.yml",
+            inventory="test",
+            extra_vars={"my_set": {1, 2, 3}},  # type: ignore[dict-item]
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "unsafe value" in final_status.error_message.lower()
+
+
+class TestExecutorShutdownHandlers:
+    """Tests for event/status handler shutdown behavior."""
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_event_handler_returns_false_on_shutdown(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that event_handler returns False when shutdown is set."""
+        (tmp_path / "site.yml").write_text("---\n")
+
+        captured_handlers: dict = {}
+
+        def capture_run(**kwargs):
+            captured_handlers["event"] = kwargs["event_handler"]
+            captured_handlers["status"] = kwargs["status_handler"]
+            mock_runner = MagicMock()
+            mock_runner.status = "successful"
+            mock_runner.rc = 0
+            return mock_runner
+
+        mock_run.side_effect = capture_run
+
+        request = TaskRequest(
+            task_id="test-shutdown-001",
+            playbook="site.yml",
+            inventory="test",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        # After stop(), shutdown is set - handlers should return False
+        event_handler = captured_handlers["event"]
+        status_handler = captured_handlers["status"]
+
+        assert event_handler({"event": "runner_on_ok"}) is False
+        assert status_handler({}, None) is False
+
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_ansible_runner_raises_exception(
+        self,
+        mock_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that exceptions from ansible_runner.run are caught."""
+        (tmp_path / "site.yml").write_text("---\n")
+        mock_run.side_effect = RuntimeError("runner exploded")
+
+        request = TaskRequest(
+            task_id="test-runner-exc-001",
+            playbook="site.yml",
+            inventory="test",
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "runner exploded" in final_status.error_message
+
+
+class TestExecutorGitPullGenericException:
+    """Tests for generic exception handling in _git_pull."""
+
+    @patch("ansible_worker.executor.subprocess.run")
+    @patch("ansible_worker.executor.ansible_runner.run")
+    def test_git_pull_generic_exception(
+        self,
+        mock_ansible_run: MagicMock,
+        mock_subprocess_run: MagicMock,
+        executor: Executor,
+        task_queue: TaskQueue,
+        status_updates: list[TaskStatus],
+        tmp_path: Path,
+    ):
+        """Test that a generic Exception in _git_pull marks task as failed."""
+        (tmp_path / "site.yml").write_text("---\n")
+        mock_subprocess_run.side_effect = PermissionError("access denied")
+
+        request = TaskRequest(
+            task_id="test-git-generic-001",
+            playbook="site.yml",
+            inventory="test",
+            git_pull=True,
+        )
+        task = Task.create(request)
+
+        task_queue.put(task)
+        executor.start()
+        time.sleep(0.5)
+        executor.stop()
+
+        mock_ansible_run.assert_not_called()
+
+        final_status = status_updates[-1]
+        assert final_status.state == TaskState.FAILED
+        assert "git pull error" in final_status.error_message
+
+
+class TestExecutorProcessEvent:
+    """Tests for _process_event with various event types."""
+
+    def test_runner_on_failed_event(self, executor: Executor):
+        """Test runner_on_failed increments tasks_failed."""
+        request = TaskRequest(
+            task_id="test-event-001", playbook="site.yml", inventory="test"
+        )
+        task = Task.create(request)
+
+        executor._process_event(task, {"event": "runner_on_failed", "event_data": {}})
+
+        assert task.status.tasks_failed == 1
+
+    def test_runner_on_skipped_event(self, executor: Executor):
+        """Test runner_on_skipped increments tasks_skipped."""
+        request = TaskRequest(
+            task_id="test-event-002", playbook="site.yml", inventory="test"
+        )
+        task = Task.create(request)
+
+        executor._process_event(task, {"event": "runner_on_skipped", "event_data": {}})
+
+        assert task.status.tasks_skipped == 1
+
+    def test_runner_on_unreachable_event(self, executor: Executor):
+        """Test runner_on_unreachable increments tasks_unreachable."""
+        request = TaskRequest(
+            task_id="test-event-003", playbook="site.yml", inventory="test"
+        )
+        task = Task.create(request)
+
+        executor._process_event(
+            task, {"event": "runner_on_unreachable", "event_data": {}}
+        )
+
+        assert task.status.tasks_unreachable == 1
