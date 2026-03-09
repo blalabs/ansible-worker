@@ -41,7 +41,7 @@ class MQTTClient:
         self._shutdown = False
 
         self._client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,  # type: ignore[attr-defined]
             protocol=mqtt.MQTTv5,
         )
 
@@ -83,9 +83,9 @@ class MQTTClient:
         self,
         client: mqtt.Client,
         userdata: Any,
-        flags: mqtt.ConnectFlags,
-        reason_code: mqtt.ReasonCode,
-        properties: mqtt.Properties | None,
+        flags: Any,
+        reason_code: Any,
+        properties: Any,
     ) -> None:
         """Handle connection established."""
         if reason_code == mqtt.CONNACK_ACCEPTED:
@@ -101,9 +101,9 @@ class MQTTClient:
         self,
         client: mqtt.Client,
         userdata: Any,
-        disconnect_flags: mqtt.DisconnectFlags,
-        reason_code: mqtt.ReasonCode,
-        properties: mqtt.Properties | None,
+        disconnect_flags: Any,
+        reason_code: Any,
+        properties: Any,
     ) -> None:
         """Handle disconnection."""
         self._connected.clear()
