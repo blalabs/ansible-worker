@@ -19,7 +19,8 @@ from ansible_worker.task_queue import TaskQueue
 logger = logging.getLogger(__name__)
 
 # Pattern for valid Ansible host patterns (hostnames, IPs, groups, patterns)
-# Allows: alphanumeric, dots, hyphens, underscores, colons, brackets, wildcards, commas, ampersands, exclamation
+# Allows: alphanumeric, dots, hyphens, underscores, colons,
+# brackets, wildcards, commas, ampersands, exclamation
 HOST_PATTERN_RE = re.compile(r'^[a-zA-Z0-9_.:\-\[\]*,&!~]+$')
 
 # Pattern for valid extra_vars keys (Ansible variable names)

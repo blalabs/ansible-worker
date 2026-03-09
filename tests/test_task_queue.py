@@ -10,7 +10,6 @@ import pytest
 from ansible_worker.models import Task, TaskRequest
 from ansible_worker.task_queue import QueueFullError, TaskQueue
 
-
 _task_counter = 0
 
 

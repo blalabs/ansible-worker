@@ -1,5 +1,9 @@
 # ansible-worker
 
+[![Tests](https://github.com/blalabs/ansible-worker/actions/workflows/tests.yml/badge.svg)](https://github.com/blalabs/ansible-worker/actions/workflows/tests.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+
 Execute Ansible playbooks triggered via MQTT messages with real-time status reporting.
 
 ## Installation

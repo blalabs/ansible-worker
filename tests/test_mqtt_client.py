@@ -65,7 +65,8 @@ class TestMQTTClient:
             on_task_message=lambda x: None,
         )
         # Format: $share/ansible-worker-<group>/<topic>
-        assert client._shared_task_topic == "$share/ansible-worker-production/ansible/production/tasks"
+        expected = "$share/ansible-worker-production/ansible/production/tasks"
+        assert client._shared_task_topic == expected
 
     def test_shared_task_topic_custom_prefix(self, mqtt_config, mock_paho_client):
         """Test shared subscription topic with custom prefix."""
@@ -211,12 +212,15 @@ class TestMQTTClientMessageHandling:
         # Simulate receiving a message
         mock_message = MagicMock()
         mock_message.topic = "ansible/test/tasks"
-        mock_message.payload = b'{"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}'
+        mock_message.payload = (
+            b'{"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}'
+        )
 
         client._on_message(mock_paho_client, None, mock_message)
 
+        expected = {"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}
         assert len(received_messages) == 1
-        assert received_messages[0] == {"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}
+        assert received_messages[0] == expected
 
     def test_on_message_invalid_json(self, mqtt_config, mock_paho_client):
         """Test handling an invalid JSON message."""
@@ -272,7 +276,9 @@ class TestMQTTClientMessageHandling:
 
         mock_message = MagicMock()
         mock_message.topic = "ansible/test/tasks"
-        mock_message.payload = b'{"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}'
+        mock_message.payload = (
+            b'{"task_id": "task123", "playbook": "site.yml", "inventory": "prod"}'
+        )
 
         # Should not raise, just log error
         client._on_message(mock_paho_client, None, mock_message)

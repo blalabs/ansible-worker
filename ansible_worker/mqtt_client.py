@@ -70,7 +70,10 @@ class MQTTClient:
         Uses MQTT 5.0 shared subscriptions: $share/<group>/<topic>
         The broker delivers each message to only ONE subscriber in the group.
         """
-        return f"$share/ansible-worker-{self._group_name}/{self._topic_prefix}/{self._group_name}/tasks"
+        return (
+            f"$share/ansible-worker-{self._group_name}"
+            f"/{self._topic_prefix}/{self._group_name}/tasks"
+        )
 
     def status_topic(self, task_id: str) -> str:
         """Get the status topic for a specific task."""
