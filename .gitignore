@@ -1,0 +1,32 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Configuration with secrets
+config.yaml
+config.yml
+!config.example.yaml
+
+# Logs
+*.log
+logs/
+
+# Coverage reports
+*.profraw
+coverage/
+tarpaulin-report.html

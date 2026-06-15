@@ -1,0 +1,55 @@
+[package]
+name = "ansible-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["BlaLabs"]
+description = "MQTT-triggered Ansible playbook execution worker"
+license = "MIT"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "signal"] }
+
+# MQTT client
+rumqttc = "0.24"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# CLI and configuration
+clap = { version = "4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Regex for env var expansion
+regex = "1"
+
+# UUID for task IDs
+uuid = { version = "1", features = ["v4"] }
+
+# TLS support (pinned to match rumqttc's rustls version)
+rustls = "0.22"
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Async trait support
+async-trait = "0.1"
+
+[profile.release]
+lto = true
+strip = true

@@ -1,0 +1,45 @@
+# Ansible Worker Configuration Example
+# Copy this file to config.yaml and modify as needed
+
+# Transport type: "mqtt" or "http"
+transport: mqtt
+
+# MQTT configuration (required if transport: mqtt)
+mqtt:
+  host: "localhost"
+  port: 1883
+  # username: "worker"
+  # password: "${MQTT_PASSWORD}"  # Environment variable expansion supported
+  keepalive: 60
+  tls_enabled: false
+  # TLS configuration (only used when tls_enabled: true)
+  # tls_ca_cert: "/path/to/ca.crt"          # CA certificate for server verification
+  # tls_client_cert: "/path/to/client.crt"  # Client certificate for mutual TLS
+  # tls_client_key: "/path/to/client.key"   # Client private key for mutual TLS
+
+# HTTP configuration (required if transport: http)
+# http:
+#   base_url: "https://api.example.com/ansible"
+#   poll_interval: 5        # seconds between polling for new tasks
+#   timeout: 30             # request timeout in seconds
+#   connect_timeout: 10     # connection timeout in seconds
+#   # Authentication (choose one):
+#   # bearer_token: "${API_TOKEN}"           # Bearer token authentication
+#   # username: "worker"                      # Basic authentication
+#   # password: "${API_PASSWORD}"
+#   # TLS configuration:
+#   # tls_ca_cert: "/path/to/ca.crt"          # Custom CA certificate
+#   # tls_client_cert: "/path/to/client.crt"  # Client certificate for mutual TLS
+#   # tls_client_key: "/path/to/client.key"   # Client private key
+#   # tls_insecure: false                     # Skip certificate verification (not recommended)
+
+worker:
+  group_name: "production"
+  playbook_directory: "/opt/ansible/playbooks"
+  topic_prefix: "ansible"
+  max_queue_size: 100
+  task_timeout: 3600  # seconds
+  # ansible_playbook_path: "/usr/local/bin/ansible-playbook"  # defaults to "ansible-playbook"
+  # git_path: "/usr/bin/git"  # defaults to "git"
+
+log_level: "INFO"  # TRACE, DEBUG, INFO, WARN, ERROR
