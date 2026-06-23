@@ -42,7 +42,7 @@ uuid = { version = "1", features = ["v4"] }
 # TLS support (pinned to match rumqttc's rustls version)
 rustls = "0.22"
 rustls-pemfile = "2"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
