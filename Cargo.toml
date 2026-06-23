@@ -12,7 +12,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full", "signal"] }
 
 # MQTT client
-rumqttc = "0.24"
+rumqttc = "0.25"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
