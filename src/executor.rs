@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{Mutex, mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 /// Status update sent from executor
@@ -60,7 +60,11 @@ impl Executor {
     }
 
     /// Validate that a path is within the allowed base directory (prevents path traversal)
-    fn validate_path_within_base(&self, requested_path: &str, base_dir: &Path) -> Result<PathBuf, String> {
+    fn validate_path_within_base(
+        &self,
+        requested_path: &str,
+        base_dir: &Path,
+    ) -> Result<PathBuf, String> {
         // Canonicalize the base directory
         let canonical_base = match base_dir.canonicalize() {
             Ok(p) => p,
@@ -77,7 +81,9 @@ impl Executor {
                 if let Some(parent) = full_path.parent() {
                     if let Ok(canonical_parent) = parent.canonicalize() {
                         if !canonical_parent.starts_with(&canonical_base) {
-                            return Err("Path traversal detected: path escapes base directory".to_string());
+                            return Err(
+                                "Path traversal detected: path escapes base directory".to_string()
+                            );
                         }
                     }
                 }
@@ -116,8 +122,12 @@ impl Executor {
 
     /// Check if a string contains Jinja2 template patterns
     fn contains_template_pattern(s: &str) -> bool {
-        s.contains("{{") || s.contains("}}") || s.contains("{%") || s.contains("%}")
-            || s.contains("{#") || s.contains("#}")
+        s.contains("{{")
+            || s.contains("}}")
+            || s.contains("{%")
+            || s.contains("%}")
+            || s.contains("{#")
+            || s.contains("#}")
     }
 
     /// Recursively sanitize a JSON value
@@ -202,8 +212,8 @@ impl Executor {
 
         // Validate inventory path (must be within playbook directory or a simple hostname pattern)
         let inventory = &task.request.inventory;
-        let is_simple_inventory = inventory.ends_with(',') ||
-            (!inventory.contains('/') && !inventory.contains('\\'));
+        let is_simple_inventory =
+            inventory.ends_with(',') || (!inventory.contains('/') && !inventory.contains('\\'));
 
         if !is_simple_inventory {
             // It's a file path, validate it's within the base directory
@@ -237,10 +247,7 @@ impl Executor {
 
         // Verify playbook file exists (after potential git pull)
         if !playbook_path.exists() {
-            task.fail(
-                None,
-                Some("Playbook not found".to_string()),
-            );
+            task.fail(None, Some("Playbook not found".to_string()));
             self.send_status(&task.status).await;
             return Ok(());
         }
@@ -252,10 +259,7 @@ impl Executor {
         // Build command arguments (use validated playbook path)
         let args = self.build_args(&task, &playbook_path);
 
-        info!(
-            "Running ansible-playbook with args: {:?}",
-            args.join(" ")
-        );
+        info!("Running ansible-playbook with args: {:?}", args.join(" "));
 
         // Determine timeout
         let timeout = task
@@ -284,7 +288,10 @@ impl Executor {
                         Some(exec_result.error_messages.join("\n"))
                     };
                     task.fail(Some(exec_result.exit_code), error_message);
-                    info!("Task {} failed with exit code {}", task_id, exec_result.exit_code);
+                    info!(
+                        "Task {} failed with exit code {}",
+                        task_id, exec_result.exit_code
+                    );
                 }
             }
             Err(ExecutionError::Timeout) => {
@@ -681,6 +688,7 @@ enum ExecutionError {
 mod tests {
     use super::*;
     use crate::models::TaskRequest;
+    use std::collections::HashMap;
 
     fn make_task() -> Task {
         let request = TaskRequest::from_json(
@@ -700,8 +708,14 @@ mod tests {
         Task::new(request)
     }
 
-    #[test]
-    fn test_build_args() {
+    /// Build an executor for tests. The returned receiver and shutdown sender
+    /// must be kept alive: the executor sends status updates on the channel,
+    /// and a dropped receiver would make those sends fail.
+    fn make_executor() -> (
+        Executor,
+        mpsc::Receiver<ExecutorStatusUpdate>,
+        watch::Sender<bool>,
+    ) {
         let config = Arc::new(Config {
             transport: crate::config::TransportType::Mqtt,
             mqtt: Some(crate::config::MqttConfig {
@@ -729,10 +743,38 @@ mod tests {
             log_level: "INFO".to_string(),
         });
 
-        let (tx, _rx) = mpsc::channel(10);
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (tx, rx) = mpsc::channel(100);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let queue = TaskQueue::new(10);
         let executor = Executor::new(config, queue, tx, shutdown_rx);
+        (executor, rx, shutdown_tx)
+    }
+
+    /// Drive a sequence of output lines through `process_output_line` with the
+    /// state it threads, returning the captured error messages.
+    async fn feed_lines(executor: &Executor, task: &mut Task, lines: &[&str]) -> Vec<String> {
+        let mut current_task = String::new();
+        let mut error_messages = Vec::new();
+        let mut capturing_error = false;
+        let mut current_error_lines = Vec::new();
+        for line in lines {
+            executor
+                .process_output_line(
+                    line,
+                    task,
+                    &mut current_task,
+                    &mut error_messages,
+                    &mut capturing_error,
+                    &mut current_error_lines,
+                )
+                .await;
+        }
+        error_messages
+    }
+
+    #[test]
+    fn test_build_args() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
 
         let task = make_task();
         let playbook_path = Path::new("/tmp/test.yml");
@@ -749,5 +791,158 @@ mod tests {
         assert!(args.contains(&"--check".to_string()));
         assert!(args.contains(&"--forks".to_string()));
         assert!(args.contains(&"10".to_string()));
+    }
+
+    #[test]
+    fn test_parse_recap_line_accumulates_across_hosts() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
+        let mut task = make_task();
+
+        executor.parse_recap_line(
+            "web01 : ok=5 changed=2 unreachable=0 failed=1 skipped=3",
+            &mut task,
+        );
+        executor.parse_recap_line(
+            "web02 : ok=4 changed=0 unreachable=1 failed=0 skipped=2",
+            &mut task,
+        );
+
+        assert_eq!(task.status.tasks_ok, 9);
+        assert_eq!(task.status.tasks_changed, 2);
+        assert_eq!(task.status.tasks_unreachable, 1);
+        assert_eq!(task.status.tasks_failed, 1);
+        assert_eq!(task.status.tasks_skipped, 5);
+    }
+
+    #[tokio::test]
+    async fn test_process_output_counts_results() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
+        let mut task = make_task();
+
+        feed_lines(
+            &executor,
+            &mut task,
+            &[
+                "TASK [install package] ****",
+                "ok: [web01]",
+                "changed: [web01]",
+                "TASK [start service] ****",
+                "skipping: [web01]",
+            ],
+        )
+        .await;
+
+        // Two TASK headers seen.
+        assert_eq!(task.status.tasks_total, 2);
+        // `ok:` and `changed:` both count as ok; `changed:` also bumps changed.
+        assert_eq!(task.status.tasks_ok, 2);
+        assert_eq!(task.status.tasks_changed, 1);
+        assert_eq!(task.status.tasks_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn test_process_output_captures_failure_message() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
+        let mut task = make_task();
+
+        let errors = feed_lines(
+            &executor,
+            &mut task,
+            &[
+                "TASK [restart nginx] ****",
+                r#"fatal: [web01]: FAILED! => {"changed": false, "msg": "Unable to start service nginx"}"#,
+                "PLAY RECAP ****",
+            ],
+        )
+        .await;
+
+        assert_eq!(task.status.tasks_failed, 1);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("restart nginx"));
+        assert!(errors[0].contains("Unable to start service nginx"));
+    }
+
+    #[tokio::test]
+    async fn test_process_output_tracks_unreachable() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
+        let mut task = make_task();
+
+        feed_lines(
+            &executor,
+            &mut task,
+            &[
+                "TASK [gather facts] ****",
+                r#"fatal: [web02]: UNREACHABLE! => {"msg": "Failed to connect"}"#,
+            ],
+        )
+        .await;
+
+        assert_eq!(task.status.tasks_unreachable, 1);
+        assert_eq!(task.status.tasks_failed, 0);
+    }
+
+    #[test]
+    fn test_validate_path_within_base() {
+        let base = std::env::temp_dir().join(format!("aw-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(base.join("sub")).unwrap();
+        std::fs::write(base.join("deploy.yml"), b"---\n").unwrap();
+        std::fs::write(base.join("sub/play.yml"), b"---\n").unwrap();
+
+        let (executor, _rx, _shutdown_tx) = make_executor();
+
+        let ok = executor.validate_path_within_base("deploy.yml", &base);
+        let ok_nested = executor.validate_path_within_base("sub/play.yml", &base);
+        let traversal = executor.validate_path_within_base("../../../etc/hosts", &base);
+        let missing = executor.validate_path_within_base("nope.yml", &base);
+
+        std::fs::remove_dir_all(&base).ok();
+
+        assert!(ok.is_ok(), "a file inside the base dir should validate");
+        assert!(
+            ok_nested.is_ok(),
+            "a nested file inside the base dir should validate"
+        );
+        assert!(
+            traversal.is_err(),
+            "a path escaping the base dir must be rejected"
+        );
+        assert!(missing.is_err(), "a non-existent path must be rejected");
+    }
+
+    #[test]
+    fn test_contains_template_pattern() {
+        assert!(Executor::contains_template_pattern("{{ malicious }}"));
+        assert!(Executor::contains_template_pattern("{% if x %}"));
+        assert!(Executor::contains_template_pattern("a {# comment #} b"));
+        assert!(!Executor::contains_template_pattern("safe_value-1.0"));
+    }
+
+    #[test]
+    fn test_sanitize_extra_vars() {
+        let (executor, _rx, _shutdown_tx) = make_executor();
+
+        let mut clean = HashMap::new();
+        clean.insert("version".to_string(), serde_json::json!("1.0"));
+        clean.insert("count".to_string(), serde_json::json!(3));
+        clean.insert("flag".to_string(), serde_json::json!(true));
+        assert!(executor.sanitize_extra_vars(&clean).is_ok());
+
+        let mut value_injection = HashMap::new();
+        value_injection.insert(
+            "payload".to_string(),
+            serde_json::json!("{{ lookup('pipe', 'id') }}"),
+        );
+        assert!(executor.sanitize_extra_vars(&value_injection).is_err());
+
+        let mut nested_injection = HashMap::new();
+        nested_injection.insert(
+            "cfg".to_string(),
+            serde_json::json!({ "inner": ["ok", "{% raw %}"] }),
+        );
+        assert!(executor.sanitize_extra_vars(&nested_injection).is_err());
+
+        let mut key_injection = HashMap::new();
+        key_injection.insert("{{ x }}".to_string(), serde_json::json!("ok"));
+        assert!(executor.sanitize_extra_vars(&key_injection).is_err());
     }
 }

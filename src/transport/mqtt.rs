@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, Transport};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tracing::{debug, error, info, warn};
 
 /// MQTT-based transport for task communication
@@ -49,8 +49,7 @@ impl MqttTransport {
             root_cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
 
-        let tls_config = rustls::ClientConfig::builder()
-            .with_root_certificates(root_cert_store);
+        let tls_config = rustls::ClientConfig::builder().with_root_certificates(root_cert_store);
 
         // Configure client certificate if provided (mutual TLS)
         let tls_config = if let (Some(cert_path), Some(key_path)) =
@@ -86,9 +85,9 @@ impl MqttTransport {
     /// Create MQTT options with optional TLS
     pub fn create_mqtt_options(&self, client_id: &str) -> Result<MqttOptions> {
         let mqtt_config = &self.config.mqtt;
-        let mqtt = mqtt_config.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("MQTT configuration required for MQTT transport")
-        })?;
+        let mqtt = mqtt_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("MQTT configuration required for MQTT transport"))?;
 
         let mut mqtt_options = MqttOptions::new(client_id, &mqtt.host, mqtt.port);
         mqtt_options.set_keep_alive(Duration::from_secs(mqtt.keepalive));
@@ -101,7 +100,8 @@ impl MqttTransport {
 
         // Configure TLS if enabled
         if mqtt.tls_enabled {
-            let transport = Self::configure_tls(mqtt).context("Failed to configure TLS for MQTT")?;
+            let transport =
+                Self::configure_tls(mqtt).context("Failed to configure TLS for MQTT")?;
             mqtt_options.set_transport(transport);
             info!("TLS enabled for MQTT connection");
         }
@@ -117,9 +117,11 @@ impl TaskReceiver for MqttTransport {
         task_queue: TaskQueue,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> Result<()> {
-        let mqtt = self.config.mqtt.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("MQTT configuration required")
-        })?;
+        let mqtt = self
+            .config
+            .mqtt
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("MQTT configuration required"))?;
 
         let client_id = format!(
             "ansible-worker-{}-{}",
@@ -131,10 +133,7 @@ impl TaskReceiver for MqttTransport {
         let (client, mut eventloop) = AsyncClient::new(mqtt_options, 100);
 
         let task_topic = self.config.task_topic();
-        info!(
-            "Connecting to MQTT broker at {}:{}",
-            mqtt.host, mqtt.port
-        );
+        info!("Connecting to MQTT broker at {}:{}", mqtt.host, mqtt.port);
 
         let mut _connected = false;
         let mut _subscribed = false;

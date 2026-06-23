@@ -19,11 +19,7 @@ use tokio::sync::watch;
 pub trait TaskReceiver: Send + Sync {
     /// Run the task receiver loop, putting received tasks into the queue
     /// This should run until shutdown is signaled
-    async fn run(
-        &self,
-        task_queue: TaskQueue,
-        shutdown_rx: watch::Receiver<bool>,
-    ) -> Result<()>;
+    async fn run(&self, task_queue: TaskQueue, shutdown_rx: watch::Receiver<bool>) -> Result<()>;
 }
 
 /// Trait for publishing task status updates

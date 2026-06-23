@@ -23,9 +23,10 @@ impl HttpTransport {
     /// Build a transport and its HTTP client from configuration. Returns an
     /// error if the HTTP section is missing or the TLS material fails to load.
     pub fn new(config: Arc<Config>) -> Result<Self> {
-        let http_config = config.http.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("HTTP configuration required for HTTP transport")
-        })?;
+        let http_config = config
+            .http
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HTTP configuration required for HTTP transport"))?;
 
         let mut builder = ClientBuilder::new()
             .timeout(Duration::from_secs(http_config.timeout))
@@ -110,9 +111,11 @@ impl TaskReceiver for HttpTransport {
         task_queue: TaskQueue,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> Result<()> {
-        let http = self.config.http.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("HTTP configuration required")
-        })?;
+        let http = self
+            .config
+            .http
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HTTP configuration required"))?;
 
         let poll_interval = Duration::from_secs(http.poll_interval);
         let tasks_url = self.tasks_url();
@@ -177,7 +180,10 @@ impl HttpTransport {
         }
 
         // Try to parse as array of tasks or single task
-        let body = response.bytes().await.context("Failed to read response body")?;
+        let body = response
+            .bytes()
+            .await
+            .context("Failed to read response body")?;
 
         // First try parsing as array
         let tasks: Vec<TaskRequest> = match serde_json::from_slice(&body) {
@@ -240,11 +246,7 @@ impl HttpTransport {
         if !response.status().is_success() {
             let status_code = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Failed to publish status, HTTP {}: {}",
-                status_code,
-                body
-            );
+            anyhow::bail!("Failed to publish status, HTTP {}: {}", status_code, body);
         }
 
         Ok(())
@@ -261,9 +263,10 @@ impl HttpStatusPublisher {
     /// Build a status publisher and its HTTP client from configuration. Returns
     /// an error if the HTTP section is missing or the TLS material fails to load.
     pub fn new(config: Arc<Config>) -> Result<Self> {
-        let http_config = config.http.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("HTTP configuration required for HTTP transport")
-        })?;
+        let http_config = config
+            .http
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HTTP configuration required for HTTP transport"))?;
 
         let mut builder = ClientBuilder::new()
             .timeout(Duration::from_secs(http_config.timeout))
@@ -346,11 +349,7 @@ impl StatusPublisher for HttpStatusPublisher {
         if !response.status().is_success() {
             let status_code = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Failed to publish status, HTTP {}: {}",
-                status_code,
-                body
-            );
+            anyhow::bail!("Failed to publish status, HTTP {}: {}", status_code, body);
         }
 
         debug!("Published status for task {} to {}", status.task_id, url);

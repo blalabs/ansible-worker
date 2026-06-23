@@ -91,8 +91,8 @@ pub struct TaskRequest {
 impl TaskRequest {
     /// Parse a task request from JSON bytes
     pub fn from_json(data: &[u8]) -> Result<Self, ModelError> {
-        let request: TaskRequest = serde_json::from_slice(data)
-            .map_err(|e| ModelError::MissingField(e.to_string()))?;
+        let request: TaskRequest =
+            serde_json::from_slice(data).map_err(|e| ModelError::MissingField(e.to_string()))?;
 
         // Validate required fields
         if request.task_id.is_empty() {
@@ -272,7 +272,14 @@ impl Task {
     }
 
     /// Update stats from final playbook stats
-    pub fn update_stats(&mut self, ok: u32, changed: u32, failed: u32, skipped: u32, unreachable: u32) {
+    pub fn update_stats(
+        &mut self,
+        ok: u32,
+        changed: u32,
+        failed: u32,
+        skipped: u32,
+        unreachable: u32,
+    ) {
         self.status.tasks_ok = ok;
         self.status.tasks_changed = changed;
         self.status.tasks_failed = failed;
@@ -322,5 +329,82 @@ mod tests {
         assert_eq!(task.state(), TaskState::Success);
         assert!(task.status.completed_at.is_some());
         assert!(task.status.duration_seconds.is_some());
+    }
+
+    fn make_task() -> Task {
+        let request = TaskRequest::from_json(
+            r#"{"task_id": "t", "playbook": "p.yml", "inventory": "h,"}"#.as_bytes(),
+        )
+        .unwrap();
+        Task::new(request)
+    }
+
+    #[test]
+    fn test_fail_records_code_and_message() {
+        let mut task = make_task();
+        task.start();
+        task.fail(Some(2), Some("boom".to_string()));
+
+        assert_eq!(task.state(), TaskState::Failed);
+        assert_eq!(task.status.return_code, Some(2));
+        assert_eq!(task.status.error_message.as_deref(), Some("boom"));
+        assert!(task.status.completed_at.is_some());
+        assert!(task.status.duration_seconds.is_some());
+    }
+
+    #[test]
+    fn test_timeout_and_cancel_set_completion() {
+        let mut timed_out = make_task();
+        timed_out.start();
+        timed_out.timeout();
+        assert_eq!(timed_out.state(), TaskState::Timeout);
+        assert!(timed_out.status.completed_at.is_some());
+
+        let mut cancelled = make_task();
+        cancelled.cancel();
+        assert_eq!(cancelled.state(), TaskState::Cancelled);
+        assert!(cancelled.status.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_counters_and_update_stats() {
+        let mut task = make_task();
+        task.increment_total();
+        task.increment_ok();
+        task.increment_changed();
+        task.increment_failed();
+        task.increment_skipped();
+        task.increment_unreachable();
+
+        assert_eq!(task.status.tasks_total, 1);
+        assert_eq!(task.status.tasks_ok, 1);
+        assert_eq!(task.status.tasks_changed, 1);
+        assert_eq!(task.status.tasks_failed, 1);
+        assert_eq!(task.status.tasks_skipped, 1);
+        assert_eq!(task.status.tasks_unreachable, 1);
+
+        // update_stats overwrites the running counts with final recap values.
+        task.update_stats(30, 4, 0, 2, 0);
+        assert_eq!(task.status.tasks_ok, 30);
+        assert_eq!(task.status.tasks_changed, 4);
+        assert_eq!(task.status.tasks_failed, 0);
+        assert_eq!(task.status.tasks_skipped, 2);
+        assert_eq!(task.status.tasks_unreachable, 0);
+    }
+
+    #[test]
+    fn test_status_to_json_serializes_state_lowercase() {
+        let mut task = make_task();
+        task.start();
+        task.succeed(0);
+
+        let bytes = task.status.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(value["task_id"], "t");
+        assert_eq!(value["state"], "success");
+        assert_eq!(value["return_code"], 0);
+        assert!(value["duration_seconds"].is_number());
+        assert!(value["error_message"].is_null());
     }
 }

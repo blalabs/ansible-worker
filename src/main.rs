@@ -3,24 +3,24 @@
 //! Loads configuration, wires up the configured transport, queue, executor,
 //! and status publisher, then runs until interrupted by `Ctrl+C` or `SIGTERM`.
 
-use anyhow::{Context, Result};
 use ansible_worker::{
+    VERSION,
     config::{Config, TransportType},
     executor::{Executor, ExecutorStatusUpdate},
     task_queue::TaskQueue,
     transport::{
+        StatusPublisher, TaskReceiver,
         http::{HttpStatusPublisher, HttpTransport},
         mqtt::{MqttStatusPublisher, MqttTransport},
-        StatusPublisher, TaskReceiver,
     },
-    VERSION,
 };
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
-use tracing::{error, info, Level};
+use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
@@ -158,13 +158,14 @@ impl AnsibleWorker {
         let publisher_handle: tokio::task::JoinHandle<()> = match transport_type {
             TransportType::Mqtt => {
                 let mqtt_transport = MqttTransport::new(Arc::clone(&pub_config));
-                let publisher = match MqttStatusPublisher::new(Arc::clone(&pub_config), &mqtt_transport) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!("Failed to create MQTT publisher: {}", e);
-                        return Err(e);
-                    }
-                };
+                let publisher =
+                    match MqttStatusPublisher::new(Arc::clone(&pub_config), &mqtt_transport) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("Failed to create MQTT publisher: {}", e);
+                            return Err(e);
+                        }
+                    };
                 let eventloop_handle = publisher.start_event_loop();
 
                 tokio::spawn(async move {
@@ -232,7 +233,9 @@ impl AnsibleWorker {
             match &self.config.transport {
                 TransportType::Mqtt => {
                     let mqtt_transport = MqttTransport::new(Arc::clone(&self.config));
-                    if let Ok(publisher) = MqttStatusPublisher::new(Arc::clone(&self.config), &mqtt_transport) {
+                    if let Ok(publisher) =
+                        MqttStatusPublisher::new(Arc::clone(&self.config), &mqtt_transport)
+                    {
                         let eventloop_handle = publisher.start_event_loop();
                         // Give it a moment to connect
                         tokio::time::sleep(Duration::from_millis(500)).await;

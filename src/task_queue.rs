@@ -177,9 +177,7 @@ mod tests {
         let queue_clone = queue.clone();
 
         // Spawn a task that waits for a value
-        let handle = tokio::spawn(async move {
-            queue_clone.get().await
-        });
+        let handle = tokio::spawn(async move { queue_clone.get().await });
 
         // Give it time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;

@@ -197,15 +197,15 @@ impl Config {
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
 
         // Parse YAML first to get raw values
-        let raw: serde_yaml::Value = serde_yaml::from_str(&content)
-            .context("Failed to parse YAML")?;
+        let raw: serde_yaml::Value =
+            serde_yaml::from_str(&content).context("Failed to parse YAML")?;
 
         // Expand environment variables
         let expanded = expand_env_vars(raw)?;
 
         // Deserialize into Config
-        let config: Config = serde_yaml::from_value(expanded)
-            .context("Failed to deserialize config")?;
+        let config: Config =
+            serde_yaml::from_value(expanded).context("Failed to deserialize config")?;
 
         // Validate
         config.validate()?;
@@ -218,10 +218,9 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         // Validate playbook directory exists
         if !Path::new(&self.worker.playbook_directory).exists() {
-            return Err(ConfigError::PlaybookDirNotFound(
-                self.worker.playbook_directory.clone(),
-            )
-            .into());
+            return Err(
+                ConfigError::PlaybookDirNotFound(self.worker.playbook_directory.clone()).into(),
+            );
         }
 
         // Validate log level
@@ -328,5 +327,70 @@ mod tests {
         let input = serde_yaml::Value::String("${NONEXISTENT_VAR}".to_string());
         let result = expand_env_vars(input);
         assert!(result.is_err());
+    }
+
+    fn worker(group: &str, prefix: &str) -> WorkerConfig {
+        WorkerConfig {
+            group_name: group.to_string(),
+            playbook_directory: "/tmp".to_string(),
+            topic_prefix: prefix.to_string(),
+            max_queue_size: 100,
+            task_timeout: 3600,
+            ansible_playbook_path: "ansible-playbook".to_string(),
+            git_path: "git".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_mqtt_topic_formats() {
+        let config = Config {
+            transport: TransportType::Mqtt,
+            mqtt: None,
+            http: None,
+            worker: worker("production", "ansible"),
+            log_level: "INFO".to_string(),
+        };
+
+        assert!(config.is_mqtt());
+        assert!(!config.is_http());
+        assert_eq!(
+            config.task_topic(),
+            "$share/ansible-worker-production/ansible/production/tasks"
+        );
+        assert_eq!(
+            config.status_topic("deploy-2026-001"),
+            "ansible/production/tasks/deploy-2026-001/status"
+        );
+    }
+
+    #[test]
+    fn test_topics_respect_custom_prefix() {
+        let config = Config {
+            transport: TransportType::Mqtt,
+            mqtt: None,
+            http: None,
+            worker: worker("staging", "infra"),
+            log_level: "INFO".to_string(),
+        };
+
+        assert_eq!(
+            config.task_topic(),
+            "$share/ansible-worker-staging/infra/staging/tasks"
+        );
+        assert_eq!(config.status_topic("t1"), "infra/staging/tasks/t1/status");
+    }
+
+    #[test]
+    fn test_http_transport_flags() {
+        let config = Config {
+            transport: TransportType::Http,
+            mqtt: None,
+            http: None,
+            worker: worker("production", "ansible"),
+            log_level: "INFO".to_string(),
+        };
+
+        assert!(config.is_http());
+        assert!(!config.is_mqtt());
     }
 }
