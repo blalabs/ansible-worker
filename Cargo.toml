@@ -12,7 +12,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full", "signal"] }
 
 # MQTT client
-rumqttc = "0.24"
+rumqttc = "0.25"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -40,7 +40,7 @@ regex = "1"
 uuid = { version = "1", features = ["v4"] }
 
 # TLS support (pinned to match rumqttc's rustls version)
-rustls = "0.22"
+rustls = "0.23"
 rustls-pemfile = "2"
 webpki-roots = "1.0"
 
