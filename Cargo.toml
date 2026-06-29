@@ -30,7 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 
 # Regex for env var expansion
@@ -42,7 +42,7 @@ uuid = { version = "1", features = ["v4"] }
 # TLS support (pinned to match rumqttc's rustls version)
 rustls = "0.23"
 rustls-pemfile = "2"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
