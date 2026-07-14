@@ -60,8 +60,11 @@ mqtt:
 
 worker:
   group_name: "production"
+  # worker_id: "worker-01"                    # optional, stable id for this worker
   playbook_directory: "/opt/ansible/playbooks"
   topic_prefix: "ansible"                     # optional, default "ansible"
+  # shared_subscription: true                 # optional, default true (MQTT only)
+  # suffix_status_with_worker_id: false       # optional, default false (MQTT only)
   max_queue_size: 100                         # optional, default 100
   task_timeout: 3600                          # optional, seconds, default 3600
   # ansible_playbook_path: "ansible-playbook" # optional, default "ansible-playbook"
@@ -116,8 +119,11 @@ Top level:
 | Key | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `group_name` | yes | | Group used for routing and shared subscriptions |
+| `worker_id` | no | | Stable identifier for this worker; required when `suffix_status_with_worker_id` is enabled |
 | `playbook_directory` | yes | | Must exist; playbooks and file inventories live here |
 | `topic_prefix` | no | `ansible` | MQTT topic prefix |
+| `shared_subscription` | no | `true` | MQTT only. `true`: tasks are load-balanced across the group (one worker per task). `false`: every worker receives every task |
+| `suffix_status_with_worker_id` | no | `false` | MQTT only. Append `worker_id` to the status topic (`.../status/<worker_id>`). Requires `worker_id` |
 | `max_queue_size` | no | `100` | Tasks beyond this are rejected |
 | `task_timeout` | no | `3600` | Default per-task timeout in seconds |
 | `ansible_playbook_path` | no | `ansible-playbook` | Path to the binary |
@@ -171,16 +177,28 @@ The worker shuts down cleanly on `Ctrl+C` or `SIGTERM`. On shutdown it stops acc
 
 ### MQTT
 
-Workers in a group subscribe to a shared subscription so each task is delivered to exactly one worker. The subscription is made at QoS 2 (exactly once):
+By default, workers in a group subscribe to a shared subscription so each task is delivered to exactly one worker. The subscription is made at QoS 2 (exactly once):
 
 ```
 $share/ansible-worker-<group>/<prefix>/<group>/tasks
+```
+
+Set `worker.shared_subscription: false` to disable this. The worker then subscribes to the plain task topic and every worker in the group receives every task (fan-out):
+
+```
+<prefix>/<group>/tasks
 ```
 
 Status is published per task at QoS 1 (at least once) with the retain flag set, so the broker keeps the last status for each task:
 
 ```
 <prefix>/<group>/tasks/<task_id>/status
+```
+
+Set `worker.suffix_status_with_worker_id: true` (and configure `worker.worker_id`) to append the worker identifier, so each worker publishes to its own status subtopic:
+
+```
+<prefix>/<group>/tasks/<task_id>/status/<worker_id>
 ```
 
 `<group>` is `worker.group_name` and `<prefix>` is `worker.topic_prefix`. So with the example config above, workers receive on `$share/ansible-worker-production/ansible/production/tasks` and publish to `ansible/production/tasks/<task_id>/status`.

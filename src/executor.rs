@@ -733,8 +733,11 @@ mod tests {
             http: None,
             worker: crate::config::WorkerConfig {
                 group_name: "test".to_string(),
+                worker_id: None,
                 playbook_directory: "/tmp".to_string(),
                 topic_prefix: "ansible".to_string(),
+                shared_subscription: true,
+                suffix_status_with_worker_id: false,
                 max_queue_size: 100,
                 task_timeout: 3600,
                 ansible_playbook_path: "ansible-playbook".to_string(),
