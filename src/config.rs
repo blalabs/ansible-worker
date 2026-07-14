@@ -30,6 +30,9 @@ pub enum ConfigError {
     /// The selected transport has no matching configuration section.
     #[error("Missing transport configuration: {0} transport selected but no {0} config provided")]
     MissingTransportConfig(String),
+    /// `suffix_status_with_worker_id` was enabled but no `worker_id` was set.
+    #[error("suffix_status_with_worker_id is enabled but worker.worker_id is not set")]
+    MissingWorkerId,
 }
 
 /// The transport the worker uses to receive tasks and publish status.
@@ -86,11 +89,28 @@ pub struct WorkerConfig {
     /// Logical group this worker belongs to, used for shared subscriptions and
     /// topic/URL routing.
     pub group_name: String,
+    /// Stable identifier for this individual worker instance. Optional, but
+    /// required when [`suffix_status_with_worker_id`](Self::suffix_status_with_worker_id)
+    /// is enabled.
+    pub worker_id: Option<String>,
     /// Directory that playbooks and file-based inventories must live under.
     pub playbook_directory: String,
     /// Prefix for MQTT topics (defaults to `ansible`).
     #[serde(default = "default_topic_prefix")]
     pub topic_prefix: String,
+    /// Whether to join an MQTT shared subscription so each task is handled by
+    /// exactly one worker in the group. When `false`, the worker subscribes to
+    /// the plain task topic and every worker in the group receives every task
+    /// (fan-out). Defaults to `true`. MQTT transport only.
+    #[serde(default = "default_shared_subscription")]
+    pub shared_subscription: bool,
+    /// Append the worker identifier to the status topic, so each worker
+    /// publishes task status to its own subtopic
+    /// (`.../tasks/<task_id>/status/<worker_id>`). Requires
+    /// [`worker_id`](Self::worker_id) to be set. Defaults to `false`. MQTT
+    /// transport only.
+    #[serde(default)]
+    pub suffix_status_with_worker_id: bool,
     /// Maximum number of queued tasks before new ones are rejected.
     #[serde(default = "default_max_queue_size")]
     pub max_queue_size: usize,
@@ -107,6 +127,10 @@ pub struct WorkerConfig {
 
 fn default_topic_prefix() -> String {
     "ansible".to_string()
+}
+
+fn default_shared_subscription() -> bool {
+    true
 }
 
 fn default_max_queue_size() -> usize {
@@ -243,25 +267,54 @@ impl Config {
             }
         }
 
+        // A worker_id is required to suffix the status topic with it
+        if self.worker.suffix_status_with_worker_id && self.worker.worker_id.is_none() {
+            return Err(ConfigError::MissingWorkerId.into());
+        }
+
         Ok(())
     }
 
-    /// Get the task subscription topic (shared subscription for load balancing)
-    /// Only applicable for MQTT transport
+    /// Get the task subscription topic.
+    ///
+    /// When [`shared_subscription`](WorkerConfig::shared_subscription) is
+    /// enabled (the default), the topic is wrapped in an MQTT shared
+    /// subscription (`$share/...`) so each task is load-balanced to exactly one
+    /// worker in the group. When disabled, the plain topic is returned and every
+    /// worker in the group receives every task.
+    ///
+    /// Only applicable for MQTT transport.
     pub fn task_topic(&self) -> String {
-        format!(
-            "$share/ansible-worker-{}/{}/{}/tasks",
-            self.worker.group_name, self.worker.topic_prefix, self.worker.group_name
-        )
+        let base = format!(
+            "{}/{}/tasks",
+            self.worker.topic_prefix, self.worker.group_name
+        );
+        if self.worker.shared_subscription {
+            format!("$share/ansible-worker-{}/{}", self.worker.group_name, base)
+        } else {
+            base
+        }
     }
 
-    /// Get the status topic for a specific task
-    /// Only applicable for MQTT transport
+    /// Get the status topic for a specific task.
+    ///
+    /// When [`suffix_status_with_worker_id`](WorkerConfig::suffix_status_with_worker_id)
+    /// is enabled, the configured [`worker_id`](WorkerConfig::worker_id) is
+    /// appended so each worker publishes to its own status subtopic.
+    ///
+    /// Only applicable for MQTT transport.
     pub fn status_topic(&self, task_id: &str) -> String {
-        format!(
+        let base = format!(
             "{}/{}/tasks/{}/status",
             self.worker.topic_prefix, self.worker.group_name, task_id
-        )
+        );
+        match (
+            &self.worker.suffix_status_with_worker_id,
+            &self.worker.worker_id,
+        ) {
+            (true, Some(worker_id)) => format!("{}/{}", base, worker_id),
+            _ => base,
+        }
     }
 
     /// Check if using MQTT transport
@@ -332,12 +385,25 @@ mod tests {
     fn worker(group: &str, prefix: &str) -> WorkerConfig {
         WorkerConfig {
             group_name: group.to_string(),
+            worker_id: None,
             playbook_directory: "/tmp".to_string(),
             topic_prefix: prefix.to_string(),
+            shared_subscription: true,
+            suffix_status_with_worker_id: false,
             max_queue_size: 100,
             task_timeout: 3600,
             ansible_playbook_path: "ansible-playbook".to_string(),
             git_path: "git".to_string(),
+        }
+    }
+
+    fn config_with(worker: WorkerConfig) -> Config {
+        Config {
+            transport: TransportType::Mqtt,
+            mqtt: None,
+            http: None,
+            worker,
+            log_level: "INFO".to_string(),
         }
     }
 
@@ -378,6 +444,51 @@ mod tests {
             "$share/ansible-worker-staging/infra/staging/tasks"
         );
         assert_eq!(config.status_topic("t1"), "infra/staging/tasks/t1/status");
+    }
+
+    #[test]
+    fn test_shared_subscription_disabled_uses_plain_topic() {
+        let mut worker = worker("production", "ansible");
+        worker.shared_subscription = false;
+        let config = config_with(worker);
+
+        assert_eq!(config.task_topic(), "ansible/production/tasks");
+    }
+
+    #[test]
+    fn test_status_topic_suffixed_with_worker_id() {
+        let mut worker = worker("production", "ansible");
+        worker.worker_id = Some("worker-a".to_string());
+        worker.suffix_status_with_worker_id = true;
+        let config = config_with(worker);
+
+        assert_eq!(
+            config.status_topic("deploy-2026-001"),
+            "ansible/production/tasks/deploy-2026-001/status/worker-a"
+        );
+    }
+
+    #[test]
+    fn test_status_topic_not_suffixed_when_disabled() {
+        let mut worker = worker("production", "ansible");
+        worker.worker_id = Some("worker-a".to_string());
+        worker.suffix_status_with_worker_id = false;
+        let config = config_with(worker);
+
+        assert_eq!(
+            config.status_topic("t1"),
+            "ansible/production/tasks/t1/status"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_suffix_without_worker_id() {
+        let mut worker = worker("production", "ansible");
+        worker.suffix_status_with_worker_id = true;
+        worker.worker_id = None;
+        let config = config_with(worker);
+
+        assert!(config.validate().is_err());
     }
 
     #[test]

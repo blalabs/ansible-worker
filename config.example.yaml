@@ -35,8 +35,14 @@ mqtt:
 
 worker:
   group_name: "production"
+  # worker_id: "worker-01"  # stable identifier for this worker instance
   playbook_directory: "/opt/ansible/playbooks"
   topic_prefix: "ansible"
+  # shared_subscription: true  # MQTT only. true (default): tasks are load-balanced
+  #                            # so each task goes to exactly one worker in the group.
+  #                            # false: every worker in the group receives every task.
+  # suffix_status_with_worker_id: false  # MQTT only. When true, append worker_id to the
+  #                                       # status topic (.../status/<worker_id>). Requires worker_id.
   max_queue_size: 100
   task_timeout: 3600  # seconds
   # ansible_playbook_path: "/usr/local/bin/ansible-playbook"  # defaults to "ansible-playbook"
